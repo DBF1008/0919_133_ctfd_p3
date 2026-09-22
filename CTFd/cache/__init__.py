@@ -6,11 +6,53 @@ from flask import current_app, request
 from flask_caching import Cache, make_template_fragment_key
 
 
+def _log_cache_operation(operation, key, start_ns):
+    """
+    Emit a structured timing record for a cache operation.
+
+    Imported lazily to avoid a circular import between CTFd.cache and
+    CTFd.utils.logging (which itself pulls in CTFd.utils.user -> CTFd.cache).
+    """
+    from CTFd.utils.logging import log_timing
+
+    duration_ms = (monotonic_ns() - start_ns) / 1_000_000.0
+    log_timing(
+        "cache.{operation}".format(operation=operation),
+        duration_ms,
+        logger="performance",
+        level=10,  # logging.DEBUG
+        key=str(key),
+    )
+
+
 class CTFdCache(Cache):
     """
     This subclass exists to give flask-caching some additional features
     Ideally likely we should have our own isolated redis connection but that might introduce more issues
     """
+
+    def get(self, *args, **kwargs):
+        start_ns = monotonic_ns()
+        try:
+            return super().get(*args, **kwargs)
+        finally:
+            _log_cache_operation("get", args[0] if args else kwargs.get("key"), start_ns)
+
+    def set(self, *args, **kwargs):
+        start_ns = monotonic_ns()
+        try:
+            return super().set(*args, **kwargs)
+        finally:
+            _log_cache_operation("set", args[0] if args else kwargs.get("key"), start_ns)
+
+    def delete(self, *args, **kwargs):
+        start_ns = monotonic_ns()
+        try:
+            return super().delete(*args, **kwargs)
+        finally:
+            _log_cache_operation(
+                "delete", args[0] if args else kwargs.get("key"), start_ns
+            )
 
     def inc(self, *args, **kwargs):
         """

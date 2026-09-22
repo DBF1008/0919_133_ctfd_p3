@@ -12,10 +12,32 @@ from flask import (
     render_template_string,
     request,
     send_file,
+    session,
     url_for,
 )
 
 admin = Blueprint("admin", __name__)
+
+
+@admin.before_request
+def audit_admin_operation():
+    """
+    Structured audit log for every admin operation.
+
+    Runs before the admins_only decorator so that both successful operations
+    and rejected unauthenticated/unauthorized attempts are recorded with the
+    current request id.
+    """
+    # Imported here to avoid a circular import at module load time
+    from CTFd.utils.logging import audit
+
+    audit(
+        "admin.operation",
+        method=request.method,
+        endpoint=request.endpoint,
+        path=request.path,
+        user_id=session.get("id"),
+    )
 
 # isort:imports-firstparty
 from CTFd.admin import challenges  # noqa: F401,I001

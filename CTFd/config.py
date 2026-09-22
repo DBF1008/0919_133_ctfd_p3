@@ -215,6 +215,10 @@ class ServerConfig(object):
     LOG_FOLDER: str = empty_str_cast(config_ini["logs"]["LOG_FOLDER"]) \
         or os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 
+    # Queries slower than this threshold (milliseconds) are logged at WARNING
+    # level on the "performance" logger with the current request id attached.
+    SLOW_QUERY_MS: int = int(os.getenv("SLOW_QUERY_MS", 500))
+
     # === UPLOADS ===
     UPLOAD_PROVIDER: str = empty_str_cast(config_ini["uploads"]["UPLOAD_PROVIDER"]) \
         or "filesystem"

@@ -24,6 +24,7 @@ from CTFd.utils.config.pages import get_pages
 from CTFd.utils.dates import isoformat, unix_time, unix_time_millis, unix_time_to_utc
 from CTFd.utils.events import EventManager, RedisEventManager
 from CTFd.utils.humanize.words import pluralize
+from CTFd.utils.logging import JSONFormatter, init_db_logging, init_request_id
 from CTFd.utils.modes import generate_account_url, get_mode_as_word
 from CTFd.utils.plugins import (
     get_configurable_plugins,
@@ -143,10 +144,14 @@ def init_logs(app):
     logger_submissions = logging.getLogger("submissions")
     logger_logins = logging.getLogger("logins")
     logger_registrations = logging.getLogger("registrations")
+    logger_audit = logging.getLogger("audit")
+    logger_performance = logging.getLogger("performance")
 
     logger_submissions.setLevel(logging.INFO)
     logger_logins.setLevel(logging.INFO)
     logger_registrations.setLevel(logging.INFO)
+    logger_audit.setLevel(logging.INFO)
+    logger_performance.setLevel(logging.DEBUG)
 
     log_dir = app.config["LOG_FOLDER"]
     if not os.path.exists(log_dir):
@@ -156,6 +161,8 @@ def init_logs(app):
         "submissions": os.path.join(log_dir, "submissions.log"),
         "logins": os.path.join(log_dir, "logins.log"),
         "registrations": os.path.join(log_dir, "registrations.log"),
+        "audit": os.path.join(log_dir, "audit.log"),
+        "performance": os.path.join(log_dir, "performance.log"),
     }
 
     try:
@@ -172,10 +179,22 @@ def init_logs(app):
         registration_log = logging.handlers.RotatingFileHandler(
             logs["registrations"], maxBytes=10485760, backupCount=5
         )
+        # Audit and performance logs are emitted as structured JSON so they
+        # can be shipped to ELK / Prometheus exporters directly.
+        audit_log = logging.handlers.RotatingFileHandler(
+            logs["audit"], maxBytes=10485760, backupCount=5
+        )
+        audit_log.setFormatter(JSONFormatter())
+        performance_log = logging.handlers.RotatingFileHandler(
+            logs["performance"], maxBytes=10485760, backupCount=5
+        )
+        performance_log.setFormatter(JSONFormatter())
 
         logger_submissions.addHandler(submission_log)
         logger_logins.addHandler(login_log)
         logger_registrations.addHandler(registration_log)
+        logger_audit.addHandler(audit_log)
+        logger_performance.addHandler(performance_log)
     except IOError:
         pass
 
@@ -184,10 +203,23 @@ def init_logs(app):
     logger_submissions.addHandler(stdout)
     logger_logins.addHandler(stdout)
     logger_registrations.addHandler(stdout)
+    logger_audit.addHandler(stdout)
+
+    # Keep high-frequency DEBUG timing records (cache ops, individual
+    # queries) out of stdout; they are still written to performance.log.
+    stdout_performance = logging.StreamHandler(stream=sys.stdout)
+    stdout_performance.setLevel(logging.INFO)
+    logger_performance.addHandler(stdout_performance)
 
     logger_submissions.propagate = 0
     logger_logins.propagate = 0
     logger_registrations.propagate = 0
+    logger_audit.propagate = 0
+    logger_performance.propagate = 0
+
+    # Record per-query durations so slow DB queries can be correlated with
+    # the request that triggered them.
+    init_db_logging(app)
 
 
 def init_events(app):
@@ -201,6 +233,11 @@ def init_events(app):
 
 
 def init_request_processors(app):
+    # Request id middleware must be registered first so that every other
+    # before_request handler, view, DB query and cache operation downstream
+    # can access the id for structured logging.
+    init_request_id(app)
+
     application_root = app.config.get("APPLICATION_ROOT")
     if application_root != "/":
         # Do application_root check first to prevent issues with cookie paths

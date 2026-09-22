@@ -20,7 +20,7 @@ from CTFd.utils.crypto import verify_password
 from CTFd.utils.decorators import ratelimit
 from CTFd.utils.decorators.visibility import check_registration_visibility
 from CTFd.utils.helpers import error_for, get_errors, markup
-from CTFd.utils.logging import log
+from CTFd.utils.logging import audit, log
 from CTFd.utils.modes import TEAMS_MODE
 from CTFd.utils.security.auth import generate_preset_admin, login_user, logout_user
 from CTFd.utils.security.email import (
@@ -429,6 +429,7 @@ def register():
             name=user.name,
             email=user.email,
         )
+        audit("auth.register.success", user_id=user.id, name=user.name)
         db.session.close()
 
         if is_teams_mode():
@@ -486,6 +487,7 @@ def login():
 
                 login_user(user)
                 log("logins", "[{date}] {ip} - {name} logged in", name=user.name)
+                audit("auth.login.success", user_id=user.id, name=user.name)
 
                 db.session.close()
                 if request.args.get("next") and validators.is_safe_url(
@@ -501,12 +503,19 @@ def login():
                     "[{date}] {ip} - submitted invalid password for {name}",
                     name=user.name,
                 )
+                audit(
+                    "auth.login.invalid_password",
+                    level=30,  # logging.WARNING
+                    user_id=user.id,
+                    name=user.name,
+                )
                 errors.append("Your username or password is incorrect")
                 db.session.close()
                 return render_template("login.html", errors=errors)
         else:
             # This user just doesn't exist
             log("logins", "[{date}] {ip} - submitted invalid account information")
+            audit("auth.login.unknown_account", level=30)  # logging.WARNING
             errors.append("Your username or password is incorrect")
             db.session.close()
             return render_template("login.html", errors=errors)
@@ -551,6 +560,7 @@ def oauth_redirect():
     state = request.args.get("state")
     if session["nonce"] != state:
         log("logins", "[{date}] {ip} - OAuth State validation mismatch")
+        audit("auth.oauth.state_mismatch", level=30)  # logging.WARNING
         error_for(endpoint="auth.login", message="OAuth State validation mismatch.")
         return redirect(url_for("auth.login"))
 
@@ -661,10 +671,12 @@ def oauth_redirect():
                 clear_user_session(user_id=user.id)
 
             login_user(user)
+            audit("auth.oauth.login_success", user_id=user.id, name=user.name)
 
             return redirect(url_for("challenges.listing"))
         else:
             log("logins", "[{date}] {ip} - OAuth token retrieval failure")
+            audit("auth.oauth.token_failure", level=30)  # logging.WARNING
             error_for(endpoint="auth.login", message="OAuth token retrieval failure.")
             return redirect(url_for("auth.login"))
     else:
