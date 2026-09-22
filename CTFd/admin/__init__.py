@@ -1,6 +1,8 @@
 import csv  # noqa: I001
 import datetime
+import logging
 import os
+import time
 from io import StringIO
 
 from flask import Blueprint, abort
@@ -62,9 +64,40 @@ from CTFd.utils.csv import (
 from CTFd.utils.decorators import admins_only
 from CTFd.utils.exports import background_import_ctf
 from CTFd.utils.exports import export_ctf as export_ctf_util
+from CTFd.utils.logging import audit, get_request_id
 from CTFd.utils.security.auth import logout_user
 from CTFd.utils.uploads import delete_file
 from CTFd.utils.user import is_admin
+
+
+@admin.before_app_request
+def _admin_audit_start():
+    # Mark the start of admin requests so the after-request hook can
+    # record how long the operation took. Match on the endpoint rather than
+    # the path so subdirectory deployments are handled correctly.
+    if request.endpoint and request.endpoint.startswith("admin."):
+        request._admin_audit_start = time.monotonic()
+
+
+@admin.after_app_request
+def _admin_audit_log(response):
+    # Structured audit trail for every admin operation. Mutating methods
+    # are recorded at INFO, read-only requests at DEBUG.
+    start = getattr(request, "_admin_audit_start", None)
+    if start is not None:
+        duration = time.monotonic() - start
+        level = logging.DEBUG if request.method == "GET" else logging.INFO
+        audit(
+            "admin.operation",
+            level=level,
+            method=request.method,
+            path=request.path,
+            endpoint=request.endpoint,
+            status=response.status_code,
+            duration=round(duration, 6),
+            request_id=get_request_id(),
+        )
+    return response
 
 
 @admin.route("/admin", methods=["GET"])

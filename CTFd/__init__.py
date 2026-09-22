@@ -250,6 +250,11 @@ def create_app(config="CTFd.config.Config"):
         # Register database
         db.init_app(app)
 
+        # Instrument the database with per-query timing and slow query logs
+        from CTFd.utils.logging import init_query_timing
+
+        init_query_timing(app)
+
         # Register Flask-Migrate
         migrations.init_app(app, db)
 

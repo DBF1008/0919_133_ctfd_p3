@@ -215,6 +215,12 @@ class ServerConfig(object):
     LOG_FOLDER: str = empty_str_cast(config_ini["logs"]["LOG_FOLDER"]) \
         or os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 
+    LOG_STRUCTURED: bool = process_boolean_str(config_ini["logs"].get("LOG_STRUCTURED"))
+
+    SLOW_QUERY_THRESHOLD: float = empty_str_cast(
+        config_ini["logs"].get("SLOW_QUERY_THRESHOLD")
+    ) or 0.5
+
     # === UPLOADS ===
     UPLOAD_PROVIDER: str = empty_str_cast(config_ini["uploads"]["UPLOAD_PROVIDER"]) \
         or "filesystem"

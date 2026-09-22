@@ -24,6 +24,11 @@ from CTFd.utils.config.pages import get_pages
 from CTFd.utils.dates import isoformat, unix_time, unix_time_millis, unix_time_to_utc
 from CTFd.utils.events import EventManager, RedisEventManager
 from CTFd.utils.humanize.words import pluralize
+from CTFd.utils.logging import (
+    JSONFormatter,
+    RequestContextFilter,
+    init_request_id_middleware,
+)
 from CTFd.utils.modes import generate_account_url, get_mode_as_word
 from CTFd.utils.plugins import (
     get_configurable_plugins,
@@ -143,10 +148,14 @@ def init_logs(app):
     logger_submissions = logging.getLogger("submissions")
     logger_logins = logging.getLogger("logins")
     logger_registrations = logging.getLogger("registrations")
+    logger_audit = logging.getLogger("audit")
+    logger_performance = logging.getLogger("performance")
 
     logger_submissions.setLevel(logging.INFO)
     logger_logins.setLevel(logging.INFO)
     logger_registrations.setLevel(logging.INFO)
+    logger_audit.setLevel(logging.INFO)
+    logger_performance.setLevel(logging.INFO)
 
     log_dir = app.config["LOG_FOLDER"]
     if not os.path.exists(log_dir):
@@ -156,38 +165,58 @@ def init_logs(app):
         "submissions": os.path.join(log_dir, "submissions.log"),
         "logins": os.path.join(log_dir, "logins.log"),
         "registrations": os.path.join(log_dir, "registrations.log"),
+        "audit": os.path.join(log_dir, "audit.log"),
+        "performance": os.path.join(log_dir, "performance.log"),
     }
+
+    # Structured (JSON) output can be enabled for log pipelines like ELK
+    if app.config.get("LOG_STRUCTURED"):
+        formatter = JSONFormatter()
+    else:
+        formatter = logging.Formatter(
+            "[%(asctime)s] %(levelname)s %(name)s "
+            "[request_id=%(request_id)s] %(message)s"
+        )
+
+    request_context = RequestContextFilter()
 
     try:
         for log in logs.values():
             if not os.path.exists(log):
                 open(log, "a").close()
 
-        submission_log = logging.handlers.RotatingFileHandler(
-            logs["submissions"], maxBytes=10485760, backupCount=5
-        )
-        login_log = logging.handlers.RotatingFileHandler(
-            logs["logins"], maxBytes=10485760, backupCount=5
-        )
-        registration_log = logging.handlers.RotatingFileHandler(
-            logs["registrations"], maxBytes=10485760, backupCount=5
-        )
+        handlers = {}
+        for name, path in logs.items():
+            handler = logging.handlers.RotatingFileHandler(
+                path, maxBytes=10485760, backupCount=5
+            )
+            handler.setFormatter(formatter)
+            handler.addFilter(request_context)
+            handlers[name] = handler
 
-        logger_submissions.addHandler(submission_log)
-        logger_logins.addHandler(login_log)
-        logger_registrations.addHandler(registration_log)
+        logger_submissions.addHandler(handlers["submissions"])
+        logger_logins.addHandler(handlers["logins"])
+        logger_registrations.addHandler(handlers["registrations"])
+        logger_audit.addHandler(handlers["audit"])
+        logger_performance.addHandler(handlers["performance"])
     except IOError:
         pass
 
     stdout = logging.StreamHandler(stream=sys.stdout)
+    stdout.setFormatter(formatter)
+    stdout.addFilter(request_context)
 
     logger_submissions.addHandler(stdout)
     logger_logins.addHandler(stdout)
     logger_registrations.addHandler(stdout)
+    logger_audit.addHandler(stdout)
+    logger_performance.addHandler(stdout)
 
     logger_submissions.propagate = 0
     logger_logins.propagate = 0
     logger_registrations.propagate = 0
+    logger_audit.propagate = 0
+    logger_performance.propagate = 0
 
 
 def init_events(app):
@@ -201,6 +230,10 @@ def init_events(app):
 
 
 def init_request_processors(app):
+    # Bind a request id to every request as early as possible so downstream
+    # logs, DB timing hooks, and cache operations can be correlated.
+    init_request_id_middleware(app)
+
     application_root = app.config.get("APPLICATION_ROOT")
     if application_root != "/":
         # Do application_root check first to prevent issues with cookie paths

@@ -1,8 +1,12 @@
+import time
+
 from flask import render_template
 
 from CTFd.admin import admin
 from CTFd.models import Challenges, Fails, Solves, Teams, Tracking, Users, db
 from CTFd.utils.decorators import admins_only
+from CTFd.utils.logging import log_slow
+from CTFd.utils.metrics import timed
 from CTFd.utils.modes import get_model
 from CTFd.utils.updates import update_check
 
@@ -10,55 +14,66 @@ from CTFd.utils.updates import update_check
 @admin.route("/admin/statistics", methods=["GET"])
 @admins_only
 def statistics():
+    view_start = time.monotonic()
     update_check()
 
     Model = get_model()
 
-    teams_registered = Teams.query.count()
-    users_registered = Users.query.count()
+    with timed("statistics.teams_registered"):
+        teams_registered = Teams.query.count()
 
-    wrong_count = (
-        Fails.query.join(Model, Fails.account_id == Model.id)
-        .filter(Model.banned == False, Model.hidden == False)
-        .count()
-    )
+    with timed("statistics.users_registered"):
+        users_registered = Users.query.count()
 
-    solve_count = (
-        Solves.query.join(Model, Solves.account_id == Model.id)
-        .filter(Model.banned == False, Model.hidden == False)
-        .count()
-    )
-
-    challenge_count = Challenges.query.count()
-
-    total_points = (
-        Challenges.query.with_entities(db.func.sum(Challenges.value).label("sum"))
-        .filter_by(state="visible")
-        .first()
-        .sum
-    ) or 0
-
-    ip_count = Tracking.query.with_entities(Tracking.ip).distinct().count()
-
-    solves_sub = (
-        db.session.query(
-            Solves.challenge_id, db.func.count(Solves.challenge_id).label("solves_cnt")
+    with timed("statistics.wrong_count"):
+        wrong_count = (
+            Fails.query.join(Model, Fails.account_id == Model.id)
+            .filter(Model.banned == False, Model.hidden == False)
+            .count()
         )
-        .join(Model, Solves.account_id == Model.id)
-        .filter(Model.banned == False, Model.hidden == False)
-        .group_by(Solves.challenge_id)
-        .subquery()
-    )
 
-    solves = (
-        db.session.query(
-            solves_sub.columns.challenge_id,
-            solves_sub.columns.solves_cnt,
-            Challenges.name,
+    with timed("statistics.solve_count"):
+        solve_count = (
+            Solves.query.join(Model, Solves.account_id == Model.id)
+            .filter(Model.banned == False, Model.hidden == False)
+            .count()
         )
-        .join(Challenges, solves_sub.columns.challenge_id == Challenges.id)
-        .all()
-    )
+
+    with timed("statistics.challenge_count"):
+        challenge_count = Challenges.query.count()
+
+    with timed("statistics.total_points"):
+        total_points = (
+            Challenges.query.with_entities(db.func.sum(Challenges.value).label("sum"))
+            .filter_by(state="visible")
+            .first()
+            .sum
+        ) or 0
+
+    with timed("statistics.ip_count"):
+        ip_count = Tracking.query.with_entities(Tracking.ip).distinct().count()
+
+    with timed("statistics.solves_by_challenge"):
+        solves_sub = (
+            db.session.query(
+                Solves.challenge_id,
+                db.func.count(Solves.challenge_id).label("solves_cnt"),
+            )
+            .join(Model, Solves.account_id == Model.id)
+            .filter(Model.banned == False, Model.hidden == False)
+            .group_by(Solves.challenge_id)
+            .subquery()
+        )
+
+        solves = (
+            db.session.query(
+                solves_sub.columns.challenge_id,
+                solves_sub.columns.solves_cnt,
+                Challenges.name,
+            )
+            .join(Challenges, solves_sub.columns.challenge_id == Challenges.id)
+            .all()
+        )
 
     solve_data = {}
     for _chal, count, name in solves:
@@ -71,6 +86,13 @@ def statistics():
         least_solved = min(solve_data, key=solve_data.get)
 
     db.session.close()
+
+    log_slow(
+        "admin.statistics",
+        time.monotonic() - view_start,
+        threshold=1.0,
+        endpoint="admin.statistics",
+    )
 
     return render_template(
         "admin/statistics.html",

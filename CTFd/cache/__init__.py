@@ -5,6 +5,8 @@ from time import monotonic_ns
 from flask import current_app, request
 from flask_caching import Cache, make_template_fragment_key
 
+from CTFd.utils.metrics import increment, timed
+
 
 class CTFdCache(Cache):
     """
@@ -12,16 +14,31 @@ class CTFdCache(Cache):
     Ideally likely we should have our own isolated redis connection but that might introduce more issues
     """
 
+    def get(self, *args, **kwargs):
+        with timed("cache.get"):
+            result = super().get(*args, **kwargs)
+        increment("cache.hit" if result is not None else "cache.miss")
+        return result
+
+    def set(self, *args, **kwargs):
+        with timed("cache.set"):
+            return super().set(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        with timed("cache.delete"):
+            return super().delete(*args, **kwargs)
+
     def inc(self, *args, **kwargs):
         """
         Support redis INCR in flask-caching
         Note that redis INCR does not expire by default
         https://github.com/pallets-eco/flask-caching/issues/418
         """
-        inc = getattr(self.cache, "inc", None)
-        if inc is not None and callable(inc):
-            return inc(*args, **kwargs)
-        raise NotImplementedError
+        with timed("cache.inc"):
+            inc = getattr(self.cache, "inc", None)
+            if inc is not None and callable(inc):
+                return inc(*args, **kwargs)
+            raise NotImplementedError
 
     def expire(self, key, timeout):
         """
